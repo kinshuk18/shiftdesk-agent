@@ -228,6 +228,35 @@ DEFAULT_PLANS: dict[str, dict] = {
             {"tool": "check_cab_options", "args": {"entry_id": "ENT_AC_001", "new_time": "21:00"}},
         ],
     },
+    # ----- escalation confirm / decline (code decides eligibility) -----
+    **{
+        phrase: {
+            "intent": "confirm_escalation",
+            "direction": None,
+            "target_time": None,
+            "relative_hint": None,
+            "chosen_option": None,
+            "ambiguity": "none",
+            "tool_calls": [{"tool": "raise_shift_change", "args": {"escalate": True}}],
+        }
+        for phrase in (
+            "yes", "yes please", "yes, send it to my manager", "yes send it to my manager",
+            "send it to my manager", "send it to the manager", "please escalate", "escalate",
+            "yes, escalate",
+        )
+    },
+    **{
+        phrase: {
+            "intent": "decline",
+            "direction": None,
+            "target_time": None,
+            "relative_hint": None,
+            "chosen_option": None,
+            "ambiguity": "none",
+            "tool_calls": [],
+        }
+        for phrase in ("no", "no thanks", "no, leave it", "leave it", "don't send it")
+    },
     # ----- raise shift change -----
     "book me on the 21:30 cab": {
         "intent": "change_shift",
@@ -307,7 +336,8 @@ class FakeLLM:
 
         # Extract user message from the messages list.
         user_text = ""
-        for msg in messages:
+        # The current turn is the last user message; earlier ones are history.
+        for msg in reversed(messages):
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 # Strip the <msg>...</msg> wrapper if present.

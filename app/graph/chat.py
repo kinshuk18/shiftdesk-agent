@@ -35,6 +35,10 @@ from app.messages import (
     PENDING_APPROVAL,
     NON_APPLIED_MESSAGES,
     REQUEST_STATUS_MESSAGES,
+    ESCALATION_OFFER,
+    ESCALATION_PICK_TIME,
+    ESCALATION_NOTHING_PENDING,
+    ESCALATION_DECLINED,
 )
 from app.tools import ToolResult, dispatch_tool
 
@@ -65,8 +69,8 @@ class ChatState(TypedDict, total=False):
     tool_errors: list[str]              # error codes encountered
 
     # Awaiting state (SPEC §9 ambiguity policy)
-    awaiting: Optional[str]             # "time" | "direction" | "am_pm" | "which_entry" | None
-    pending_slots: dict                 # e.g. {"entry_id": "...", "direction": "drop"}
+    awaiting: Optional[str]             # "time" | "direction" | "am_pm" | "which_entry" | "escalation_confirm" | None
+    pending_slots: dict                 # e.g. {"entry_id": "...", "direction": "drop", "escalation": {entry_id,new_time,cab_id}}
 
     # LLM budget
     llm_calls_used: int
@@ -234,9 +238,36 @@ def node_validate_plan(state: ChatState) -> ChatState:
             if key in forbidden:
                 del args[key]
 
-    # Awaiting-slot context injection.
+    # Escalation gate: ONLY code sets escalate=True, and only for the exact change
+    # the previous turn offered to escalate (R1/R2 block). The model may ask for it;
+    # anything it put in escalate is overwritten here, and the tool re-checks rules.
     awaiting = state.get("awaiting")
-    pending = state.get("pending_slots", {})
+    pending = dict(state.get("pending_slots") or {})
+    offer = pending.pop("escalation", None)  # a stale offer never survives this turn
+    if awaiting == "escalation_confirm":
+        awaiting = None  # an offer is answered (or abandoned) by the very next message
+    else:
+        offer = None
+    intent = plan_dict.get("intent")
+    wants_escalation = intent == "confirm_escalation" or any(
+        tc.get("tool") == "raise_shift_change" and (tc.get("args") or {}).get("escalate") is True
+        for tc in tool_calls
+    )
+    for tc in tool_calls:
+        if tc.get("tool") == "raise_shift_change":
+            tc.setdefault("args", {})["escalate"] = False
+    base = {**state, "awaiting": awaiting, "pending_slots": pending}
+    if wants_escalation:
+        if not offer:
+            return {**base, "plan": plan_dict, "reply": ESCALATION_NOTHING_PENDING, "status": "ok", "options": [], "request_id": None}
+        plan_dict["tool_calls"] = [{"tool": "raise_shift_change", "args": {**offer, "escalate": True}}]
+        return {**base, "plan": plan_dict}
+    if intent == "decline" and offer:
+        return {**base, "plan": plan_dict, "reply": ESCALATION_DECLINED, "status": "ok", "options": [], "request_id": None}
+    state = base
+    tool_calls = plan_dict.get("tool_calls", [])
+
+    # Awaiting-slot context injection.
 
     if awaiting and pending:
         # If the follow-up doesn't specify an entry_id, inject from context.
@@ -286,6 +317,7 @@ def node_execute_tools(state: ChatState) -> ChatState:
 
         result_dict = {
             "tool": tool_name,
+            "args": args,
             "ok": result.ok,
             "data": result.data,
             "error_code": result.error_code,
@@ -392,11 +424,18 @@ def node_compose_reply(state: ChatState) -> ChatState:
         for err_code in ("R1_CUTOFF_VIOLATED", "R2_DELTA_EXCEEDED", "R3_OUTSIDE_SERVICE_WINDOW"):
             if first_err == err_code:
                 params = {}
+                failed = None
                 for r in tool_results:
                     if r.get("error_code") == err_code:
                         params = r.get("error_params", {})
+                        failed = r
                 reply = format_rule_message(err_code, params)
                 status = "error"
+                args = (failed or {}).get("args") or {}
+                if (err_code != "R3_OUTSIDE_SERVICE_WINDOW" and failed and failed["tool"] == "raise_shift_change"
+                        and not args.get("escalate") and all(args.get(k) for k in ("entry_id", "new_time", "cab_id"))):
+                    offer = {"entry_id": args["entry_id"], "new_time": args["new_time"], "cab_id": args["cab_id"]}
+                    return _offer_escalation(state, reply, offer, [])
                 return _append_to_history({**state, "reply": reply, "status": status, "options": [], "request_id": None})
 
         # Other tool errors (DB_ERROR, TOOL_ARG_ERROR, UNKNOWN_TOOL, etc.)
@@ -416,7 +455,9 @@ def node_compose_reply(state: ChatState) -> ChatState:
 
     # -- No tool calls (unknown intent or empty) --
     if not tool_results:
-        if plan_dict.get("intent") == "unknown":
+        if plan_dict.get("intent") == "decline":
+            reply = "Okay. Your roster has not been changed."
+        elif plan_dict.get("intent") == "unknown":
             reply = "I'm not sure what you'd like to do. You can ask me to show your roster, change your pickup or drop time, or check the status of a request."
         else:
             reply = "I didn't quite understand that. Could you please rephrase?"
@@ -447,11 +488,20 @@ def node_compose_reply(state: ChatState) -> ChatState:
             data = r["data"]
             rules = data.get("rules", {})
 
-            # R1 violation.
-            if not rules.get("r1", {}).get("ok", True):
-                params = rules["r1"]["params"]
-                reply = format_rule_message("R1_CUTOFF_VIOLATED", params)
-                nearest = data.get("nearest_slots", [])
+            nearest = data.get("nearest_slots", [])
+            exact = data.get("exact_match")
+            entry_id = (data.get("entry") or {}).get("entry_id")
+
+            # R3 first: outside the service window is never escalated.
+            if not rules.get("r3", {}).get("ok", True):
+                reply = format_rule_message("R3_OUTSIDE_SERVICE_WINDOW", rules["r3"]["params"])
+                return _append_to_history({**state, "reply": reply, "status": "error", "options": [], "request_id": None})
+
+            # R1 / R2: explain with the company's numbers, list nearest slots, offer escalation.
+            for key, code in (("r1", "R1_CUTOFF_VIOLATED"), ("r2", "R2_DELTA_EXCEEDED")):
+                if rules.get(key, {}).get("ok", True):
+                    continue
+                reply = format_rule_message(code, rules[key]["params"])
                 if nearest:
                     reply += "\n\nNearest available options:\n"
                     reply += "\n".join(
@@ -459,26 +509,18 @@ def node_compose_reply(state: ChatState) -> ChatState:
                         for s in nearest
                     )
                     options = [s["departure_time"] for s in nearest]
-                status = "error"
-                return _append_to_history({**state, "reply": reply, "status": status, "options": options, "request_id": None})
-
-            # R2 violation.
-            if not rules.get("r2", {}).get("ok", True):
-                params = rules["r2"]["params"]
-                reply = format_rule_message("R2_DELTA_EXCEEDED", params)
-                status = "error"
-                return _append_to_history({**state, "reply": reply, "status": status, "options": [], "request_id": None})
-
-            # R3 violation.
-            if not rules.get("r3", {}).get("ok", True):
-                params = rules["r3"]["params"]
-                reply = format_rule_message("R3_OUTSIDE_SERVICE_WINDOW", params)
-                status = "error"
-                return _append_to_history({**state, "reply": reply, "status": status, "options": [], "request_id": None})
+                if exact and entry_id and data.get("escalatable"):
+                    offer = {"entry_id": entry_id, "new_time": exact["departure_time"], "cab_id": exact["cab_id"]}
+                    return _offer_escalation(state, reply, offer, options)
+                if nearest and entry_id:
+                    # No free cab at the requested time: let them pick a time, then offer again.
+                    reply += "\n\n" + ESCALATION_PICK_TIME
+                    pending = {**(state.get("pending_slots") or {}), "entry_id": entry_id}
+                    return _append_to_history({**state, "reply": reply, "status": "error", "options": options,
+                                               "request_id": None, "awaiting": "time", "pending_slots": pending})
+                return _append_to_history({**state, "reply": reply, "status": "error", "options": options, "request_id": None})
 
             # No rule violation — R4 / nearest slots.
-            exact = data.get("exact_match")
-            nearest = data.get("nearest_slots", [])
             if exact:
                 reply = (
                     f"I found a cab at {exact['departure_time']} with {exact['free_seats']} seat(s) free "
@@ -514,6 +556,7 @@ def node_compose_reply(state: ChatState) -> ChatState:
     # -- raise_shift_change --
     for r in tool_results:
         if r["tool"] == "raise_shift_change" and r.get("ok") and r.get("data"):
+            state = {**state, "awaiting": None}
             data = r["data"]
             rid = data.get("request_id")
             applied_status = data.get("status", "applied")
@@ -564,6 +607,20 @@ def node_compose_reply(state: ChatState) -> ChatState:
         trace_id=trace_id,
     )
     return _append_to_history({**state, "reply": reply, "status": "error", "options": [], "request_id": None})
+
+
+def _offer_escalation(state: ChatState, reply: str, offer: dict, options: list[str]) -> ChatState:
+    """R1/R2 block: remember the exact change and ask before escalating (SPEC §9)."""
+    pending = {**(state.get("pending_slots") or {}), "escalation": offer, "entry_id": offer["entry_id"]}
+    return _append_to_history({
+        **state,
+        "reply": reply + "\n\n" + ESCALATION_OFFER,
+        "status": "error",
+        "options": options,
+        "request_id": None,
+        "awaiting": "escalation_confirm",
+        "pending_slots": pending,
+    })
 
 
 def _append_to_history(state: ChatState) -> ChatState:

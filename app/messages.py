@@ -85,6 +85,20 @@ NON_APPLIED_MESSAGES = {
     "failed": "We could not apply this change. Your roster is unchanged. Please contact the transport desk.",
 }
 
+# Escalation (R1/R2 only, SPEC §7/§9)
+ESCALATION_OFFER = (
+    "If you still need this change, I can send it to your transport manager for approval "
+    "(no seat is held while it waits). Reply \"yes, send it to my manager\" to do that, or \"no\" to leave it."
+)
+ESCALATION_PICK_TIME = (
+    "Pick one of these times and I can send that change to your transport manager for approval."
+)
+ESCALATION_NOTHING_PENDING = (
+    "There is no blocked change waiting to be sent to your manager. Your roster has not been changed. "
+    "Tell me which trip and what time you would like."
+)
+ESCALATION_DECLINED = "Okay, I won't send it. Your roster has not been changed."
+
 # Unexpected server error — includes trace_id so ops can correlate
 GENERIC_ERROR = (
     "Something unexpected happened. Your roster has not been changed. "

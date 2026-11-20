@@ -270,6 +270,13 @@ def chat(
         "tool_results": [],
         "tool_errors": [],
         "options": [],
+        # Per-turn outputs must be reset: the checkpointer merges this input into
+        # the saved state, and a leftover "reply" short-circuits every node.
+        "reply": "",
+        "status": "ok",
+        "request_id": None,
+        "plan": None,
+        "plan_error": None,
     }
 
     config = {"configurable": {"thread_id": thread_id}}

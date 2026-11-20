@@ -181,7 +181,7 @@ def check_cab_options(principal: Principal, entry_id: str, new_time: str) -> Too
         - (new_t.hour * 60 + new_t.minute)
     )):
         cab_time = cab.departure_time
-        if cab_time == new_t and free > 0:
+        if cab_time == new_t and free > 0 and exact_match is None:
             exact_match = {
                 "cab_id": cab.cab_id,
                 "departure_time": cab_time.strftime("%H:%M"),

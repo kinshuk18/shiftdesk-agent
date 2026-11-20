@@ -69,7 +69,8 @@ class ToolCall(BaseModel):
 
 class Plan(BaseModel):
     intent: Literal[
-        "change_shift", "get_roster", "get_status", "ask_clarification", "unknown"
+        "change_shift", "get_roster", "get_status", "ask_clarification",
+        "confirm_escalation", "decline", "unknown"
     ]
     direction: Optional[Literal["pickup", "drop"]] = None
     target_time: Optional[str] = None  # "HH:MM" or null
