@@ -51,6 +51,8 @@ TOOL_TIMEOUT = (
     "Please try again, or contact the transport desk on {desk_phone}."
 )
 
+WRITE_TOOL_UNCERTAIN = "The status of your request is unknown; it may have been applied. Please ask \"my requests\" to check."
+
 # Seat filled between check and apply
 CAB_FILLED = (
     "That cab just filled up while you were deciding. "

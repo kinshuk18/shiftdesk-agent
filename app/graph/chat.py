@@ -29,6 +29,7 @@ from app.messages import (
     GENERIC_FAILURE,
     GENERIC_ERROR,
     TOOL_TIMEOUT,
+    WRITE_TOOL_UNCERTAIN,
     CAB_FILLED,
     format_rule_message,
 )
@@ -354,6 +355,8 @@ def node_compose_reply(state: ChatState) -> ChatState:
     if tool_errors:
         first_err = tool_errors[0]
         if first_err in ("TIMEOUT", "TOOL_TIMEOUT"):
+            if any(r.get("tool") == "raise_shift_change" for r in tool_results):
+                return _append_to_history({**state, "reply": WRITE_TOOL_UNCERTAIN, "status": "error", "options": [], "request_id": None})
             # Find which step.
             step = "checking your request"
             for r in tool_results:
@@ -387,6 +390,8 @@ def node_compose_reply(state: ChatState) -> ChatState:
 
         # Other tool errors (DB_ERROR, TOOL_ARG_ERROR, UNKNOWN_TOOL, etc.)
         # Return generic failure — no internal details to the user.
+        if any(r.get("tool") == "raise_shift_change" and r.get("error_code") == "TOOL_ERROR" for r in tool_results):
+            return _append_to_history({**state, "reply": WRITE_TOOL_UNCERTAIN, "status": "error", "options": [], "request_id": None})
         step = "processing your request"
         for r in tool_results:
             if not r.get("ok"):

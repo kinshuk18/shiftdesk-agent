@@ -16,8 +16,11 @@ services:
 
   api:
     build: .
+    env_file:
+      - path: .env
+        required: false
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     environment:
       DATABASE_URL: postgresql://shiftdesk:shiftdesk@db:5432/shiftdesk
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
@@ -28,6 +31,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     # psql is available via postgres client installed below (in Dockerfile)
     # but we install it in the entrypoint target. For the entrypoint to call
     # psql we add the postgres client package. See Dockerfile.
