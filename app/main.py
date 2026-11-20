@@ -271,7 +271,7 @@ def chat(
     try:
         future = _executor.submit(_run_graph)
         result = future.result(timeout=_CHAT_DEADLINE_SECONDS)
-    except FuturesTimeout:
+    except (FuturesTimeout, TimeoutError):
         logger.error(
             "chat graph timed out after %.1fs trace_id=%s thread=%s",
             _CHAT_DEADLINE_SECONDS,

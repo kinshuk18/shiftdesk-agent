@@ -16,9 +16,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
-from datetime import date as _date, time
 from typing import Any, Optional
 
 import psycopg
@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 _TOOL_TIMEOUT_SECONDS = 1.5
 _tool_executor = ThreadPoolExecutor(max_workers=8)
+_EXEC = _tool_executor
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ def get_my_roster(principal: Principal, date: str) -> ToolResult:
     """
     date_str = date  # local alias for clarity
     try:
-        service_date = _date.fromisoformat(date_str)
+        service_date = datetime.date.fromisoformat(date_str)
     except (ValueError, TypeError):
         return ToolResult(ok=False, error_code="INVALID_DATE", error_params={"date": date_str})
 
@@ -131,7 +132,7 @@ def check_cab_options(principal: Principal, entry_id: str, new_time: str) -> Too
     # Parse new_time.
     try:
         hh, mm = new_time.split(":")
-        new_t = time(int(hh), int(mm))
+        new_t = datetime.time(int(hh), int(mm))
     except (ValueError, AttributeError):
         return ToolResult(ok=False, error_code="INVALID_TIME", error_params={"new_time": new_time})
 
@@ -271,7 +272,7 @@ def raise_shift_change(
     # Parse new_time.
     try:
         hh, mm = new_time.split(":")
-        new_t = time(int(hh), int(mm))
+        new_t = datetime.time(int(hh), int(mm))
     except (ValueError, AttributeError):
         return ToolResult(ok=False, error_code="INVALID_TIME", error_params={"new_time": new_time})
 

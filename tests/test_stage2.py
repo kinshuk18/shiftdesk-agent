@@ -186,30 +186,36 @@ class TestToolFailure:
         result = _run_graph_with_fake("anything", fail_mode="injected_tool")
         assert "Traceback" not in result.get("reply", "")
 
-    @skip_no_db
-    def test_tool_timeout_via_dispatch(self):
-        """
-        Simulate a tool timeout by patching TOOL_REGISTRY so the tool
-        sleeps longer than the 1.5-second SIGALRM timeout.
-        """
-        from app.tools import dispatch_tool, ToolResult, TOOL_REGISTRY
+    @pytest.mark.parametrize(
+        "mode, expected_code",
+        [
+            ("sleep", "TOOL_TIMEOUT"),
+            ("raise", "TOOL_ERROR"),
+        ],
+    )
+    def test_tool_timeout_via_dispatch(self, monkeypatch, mode, expected_code):
+        import time as _time
+        from app.tools import dispatch_tool, TOOL_REGISTRY
         from app.auth import Principal
 
-        original = TOOL_REGISTRY["get_my_roster"]
+        if mode == "sleep":
+            def mock_roster(principal, date):
+                _time.sleep(2.0)
+            monkeypatch.setitem(TOOL_REGISTRY, "get_my_roster", mock_roster)
+        else:
+            def mock_roster(principal, date):
+                raise RuntimeError("synthetic error")
+            monkeypatch.setitem(TOOL_REGISTRY, "get_my_roster", mock_roster)
 
-        def slow_roster(principal, date):
-            import time as _time
-            _time.sleep(5)
-            return ToolResult(ok=True, data={})
+        p = Principal(company_id="acme", employee_id="E101", role="employee")
+        t0 = _time.monotonic()
+        result = dispatch_tool(p, "get_my_roster", {"date": "2026-11-20"})
+        elapsed = _time.monotonic() - t0
 
-        TOOL_REGISTRY["get_my_roster"] = slow_roster
-        try:
-            p = Principal(company_id="acme", employee_id="E101", role="employee")
-            result = dispatch_tool(p, "get_my_roster", {"date": "2026-11-20"})
-            assert not result.ok
-            assert result.error_code == "TIMEOUT"
-        finally:
-            TOOL_REGISTRY["get_my_roster"] = original
+        assert result.ok is False
+        assert result.error_code == expected_code
+        if mode == "sleep":
+            assert elapsed < 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -504,3 +510,27 @@ class TestHTTPEndpoint:
         assert resp.status_code == 200
         body = resp.json()
         assert "Traceback" not in body.get("reply", "")
+
+    @skip_no_db
+    def test_chat_deadline_fallback(self, client, monkeypatch):
+        import time as _time
+        from app.main import app
+
+        def slow_invoke(*args, **kwargs):
+            _time.sleep(6)
+            return {}
+
+        monkeypatch.setattr(app.state.chat_graph, "invoke", slow_invoke)
+        t0 = _time.monotonic()
+        resp = client.post(
+            "/chat",
+            json={"message": "show my roster"},
+            headers=_auth_headers("acme", "E101"),
+        )
+        elapsed = _time.monotonic() - t0
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "reply" in body
+        assert "Traceback" not in body.get("reply", "")
+        assert "Traceback" not in json.dumps(body)
+        assert elapsed < 5.5
