@@ -85,6 +85,12 @@ NON_APPLIED_MESSAGES = {
     "failed": "We could not apply this change. Your roster is unchanged. Please contact the transport desk.",
 }
 
+# Entry id not on this employee's roster (also what another tenant's id looks like).
+ENTRY_NOT_FOUND = (
+    "I couldn't find that trip on your roster. Your roster has not been changed. "
+    'Ask me "show my roster" to see your trips for today.'
+)
+
 # Escalation (R1/R2 only, SPEC §7/§9)
 ESCALATION_OFFER = (
     "If you still need this change, I can send it to your transport manager for approval "
@@ -94,10 +100,11 @@ ESCALATION_PICK_TIME = (
     "Pick one of these times and I can send that change to your transport manager for approval."
 )
 ESCALATION_NOTHING_PENDING = (
-    "There is no blocked change waiting to be sent to your manager. Your roster has not been changed. "
+    "There is no change waiting for your confirmation. Your roster has not been changed. "
     "Tell me which trip and what time you would like."
 )
-ESCALATION_DECLINED = "Okay, I won't send it. Your roster has not been changed."
+ESCALATION_DECLINED = "Okay, I won't send it to your manager. Your roster has not been changed."
+BOOKING_DECLINED = "Okay, I won't book it. Your roster has not been changed."
 
 # Unexpected server error — includes trace_id so ops can correlate
 GENERIC_ERROR = (

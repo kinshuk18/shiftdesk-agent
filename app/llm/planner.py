@@ -70,7 +70,7 @@ class ToolCall(BaseModel):
 class Plan(BaseModel):
     intent: Literal[
         "change_shift", "get_roster", "get_status", "ask_clarification",
-        "confirm_escalation", "decline", "unknown"
+        "confirm", "decline", "unknown"
     ]
     direction: Optional[Literal["pickup", "drop"]] = None
     target_time: Optional[str] = None  # "HH:MM" or null
@@ -118,6 +118,7 @@ def call_planner(
     budget: LLMBudget,
     user_message: str,
     history: list[dict] | None = None,
+    roster: list[dict] | None = None,
 ) -> Plan:
     """
     Call the LLM planner, validate the result, and repair once on failure.
@@ -143,7 +144,7 @@ def call_planner(
     messages = [{"role": "system", "content": PLANNER_SYSTEM_PROMPT}]
     if history:
         messages.extend(history)
-    messages.append({"role": "user", "content": build_user_block(user_message)})
+    messages.append({"role": "user", "content": build_user_block(user_message, roster)})
 
     # First attempt.
     budget.charge()

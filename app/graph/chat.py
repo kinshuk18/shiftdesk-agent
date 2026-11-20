@@ -39,6 +39,8 @@ from app.messages import (
     ESCALATION_PICK_TIME,
     ESCALATION_NOTHING_PENDING,
     ESCALATION_DECLINED,
+    BOOKING_DECLINED,
+    ENTRY_NOT_FOUND,
 )
 from app.tools import ToolResult, dispatch_tool
 
@@ -136,6 +138,20 @@ def node_authorize(state: ChatState) -> ChatState:
 # ---------------------------------------------------------------------------
 
 
+def _roster_context(p: dict) -> list[dict] | None:
+    """The employee's own trips today, so the planner can name real entry_ids.
+    Principal-scoped like every tool; best effort (None on any failure or timeout)."""
+    import app.tools as tools
+    try:
+        principal = Principal(company_id=p["company_id"], employee_id=p["employee_id"], role=p.get("role", "employee"))
+        fut = tools._tool_executor.submit(tools.get_my_roster, principal, clock.now().date().isoformat())
+        result = fut.result(timeout=1.0)
+        return result.data["entries"] if result.ok else None
+    except Exception:
+        logger.warning("roster context unavailable for planner")
+        return None
+
+
 def node_plan(state: ChatState) -> ChatState:
     """
     Call the LLM planner to turn the user message into a structured Plan.
@@ -158,6 +174,7 @@ def node_plan(state: ChatState) -> ChatState:
             budget=budget,
             user_message=state.get("current_message", ""),
             history=history[-MAX_HISTORY_TURNS * 2:] if history else None,
+            roster=_roster_context(state.get("principal") or {}),
         )
         return {
             **state,
@@ -241,15 +258,16 @@ def node_validate_plan(state: ChatState) -> ChatState:
     # Escalation gate: ONLY code sets escalate=True, and only for the exact change
     # the previous turn offered to escalate (R1/R2 block). The model may ask for it;
     # anything it put in escalate is overwritten here, and the tool re-checks rules.
+    # The same "yes" also confirms a booking offer (awaiting="option_choice").
     awaiting = state.get("awaiting")
     pending = dict(state.get("pending_slots") or {})
-    offer = pending.pop("escalation", None)  # a stale offer never survives this turn
-    if awaiting == "escalation_confirm":
-        awaiting = None  # an offer is answered (or abandoned) by the very next message
-    else:
-        offer = None
+    # A stale offer never survives this turn: it is answered or abandoned now.
+    offers = {"escalation_confirm": pending.pop("escalation", None), "option_choice": pending.pop("booking", None)}
+    offer = offers.get(awaiting)
+    if awaiting in offers:
+        awaiting = None
     intent = plan_dict.get("intent")
-    wants_escalation = intent == "confirm_escalation" or any(
+    wants_confirm = intent == "confirm" or any(
         tc.get("tool") == "raise_shift_change" and (tc.get("args") or {}).get("escalate") is True
         for tc in tool_calls
     )
@@ -257,13 +275,15 @@ def node_validate_plan(state: ChatState) -> ChatState:
         if tc.get("tool") == "raise_shift_change":
             tc.setdefault("args", {})["escalate"] = False
     base = {**state, "awaiting": awaiting, "pending_slots": pending}
-    if wants_escalation:
+    if wants_confirm:
         if not offer:
             return {**base, "plan": plan_dict, "reply": ESCALATION_NOTHING_PENDING, "status": "ok", "options": [], "request_id": None}
-        plan_dict["tool_calls"] = [{"tool": "raise_shift_change", "args": {**offer, "escalate": True}}]
+        escalate = state.get("awaiting") == "escalation_confirm"
+        plan_dict["tool_calls"] = [{"tool": "raise_shift_change", "args": {**offer, "escalate": escalate}}]
         return {**base, "plan": plan_dict}
     if intent == "decline" and offer:
-        return {**base, "plan": plan_dict, "reply": ESCALATION_DECLINED, "status": "ok", "options": [], "request_id": None}
+        declined = ESCALATION_DECLINED if state.get("awaiting") == "escalation_confirm" else BOOKING_DECLINED
+        return {**base, "plan": plan_dict, "reply": declined, "status": "ok", "options": [], "request_id": None}
     state = base
     tool_calls = plan_dict.get("tool_calls", [])
 
@@ -438,6 +458,9 @@ def node_compose_reply(state: ChatState) -> ChatState:
                     return _offer_escalation(state, reply, offer, [])
                 return _append_to_history({**state, "reply": reply, "status": status, "options": [], "request_id": None})
 
+        if first_err == "ENTRY_NOT_FOUND":
+            return _append_to_history({**state, "reply": ENTRY_NOT_FOUND, "status": "error", "options": [], "request_id": None})
+
         # Other tool errors (DB_ERROR, TOOL_ARG_ERROR, UNKNOWN_TOOL, etc.)
         # Return generic failure — no internal details to the user.
         if any(r.get("tool") == "raise_shift_change" and r.get("error_code") == "TOOL_ERROR" for r in tool_results):
@@ -524,10 +547,15 @@ def node_compose_reply(state: ChatState) -> ChatState:
             if exact:
                 reply = (
                     f"I found a cab at {exact['departure_time']} with {exact['free_seats']} seat(s) free "
-                    f"(cab {exact['cab_id']}). Shall I book it?"
+                    f"(cab {exact['cab_id']}). Shall I book it? Your roster has not been changed yet."
                 )
                 options = [exact["cab_id"]]
                 status = "awaiting_input"
+                if entry_id:
+                    booking = {"entry_id": entry_id, "new_time": exact["departure_time"], "cab_id": exact["cab_id"]}
+                    pending = {**(state.get("pending_slots") or {}), "booking": booking, "entry_id": entry_id}
+                    return _append_to_history({**state, "reply": reply, "status": status, "options": options,
+                                               "request_id": None, "awaiting": "option_choice", "pending_slots": pending})
             elif nearest:
                 reply = "No cab at that exact time, but here are the nearest options:\n"
                 reply += "\n".join(

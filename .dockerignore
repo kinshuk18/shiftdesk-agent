@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+**/__pycache__
+*.pyc
+.pytest_cache
+PROGRESS.md
+VIVA_NOTES.md
+*.zip
+.stage3_facts.txt

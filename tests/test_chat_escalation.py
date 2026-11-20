@@ -87,14 +87,14 @@ def test_cutoff_offer_confirm_pending_says_unchanged(chat):
 
     # Same confirmation again does not create a second request (offer consumed).
     third = _say(client, employee, "yes")
-    assert "no blocked change" in third["reply"].lower()
+    assert "no change waiting" in third["reply"].lower()
     assert len(_request_rows(employee)) == 1
 
 
 def test_yes_without_offer_does_nothing(chat):
     client, employee, d = chat
     reply = _say(client, employee, "yes, send it to my manager")
-    assert "no blocked change" in reply["reply"].lower()
+    assert "no change waiting" in reply["reply"].lower()
     assert _request_rows(employee) == []
 
 
@@ -103,7 +103,7 @@ def test_model_cannot_escalate_on_its_own(chat):
     reply = _say(client, employee, "force it through")
     assert _request_rows(employee) == []
     assert _roster_cab(d["approval_entry"]) == "C_AC_D01"
-    assert "not been changed" in reply["reply"] or "no blocked change" in reply["reply"].lower()
+    assert "not been changed" in reply["reply"] or "no change waiting" in reply["reply"].lower()
 
 
 def test_decline_clears_offer(chat):
@@ -112,7 +112,7 @@ def test_decline_clears_offer(chat):
     declined = _say(client, employee, "no thanks")
     assert "won't send" in declined["reply"]
     after = _say(client, employee, "yes")
-    assert "no blocked change" in after["reply"].lower()
+    assert "no change waiting" in after["reply"].lower()
     assert _request_rows(employee) == []
 
 
@@ -122,3 +122,21 @@ def test_service_window_breach_never_offers_escalation(chat):
     assert "service window" in reply["reply"]
     assert "manager" not in reply["reply"].lower()
     assert "not been changed" in reply["reply"]
+
+
+def test_booking_offer_confirmed_with_yes_applies(stage3_data):
+    from app.main import app
+    import app.graph.chat as chat_mod
+    from app.llm.fake import FakeLLM
+    d = stage3_data
+    employee, entry = d["employees"][0], d["entries"][0]  # 22:00 drop: R1/R2 fine
+    with TestClient(app, raise_server_exceptions=False) as client:
+        chat_mod._llm_singleton = FakeLLM(plans=_plans(entry))
+        offer = _say(client, employee, "move my drop to 21:00")
+        assert offer["status"] == "awaiting_input" and "Shall I book it?" in offer["reply"]
+        assert _roster_cab(entry) == "C_AC_D01"
+        done = _say(client, employee, "yes")
+        assert done["status"] == "ok" and "applied" in done["reply"]
+        assert _roster_cab(entry) == offer["options"][0]
+        again = _say(client, employee, "yes")  # offer consumed
+        assert "no change waiting" in again["reply"].lower()

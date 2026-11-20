@@ -152,6 +152,23 @@ DEFAULT_PLANS: dict[str, dict] = {
             }},
         ],
     },
+    **{
+        phrase: {
+            "intent": "change_shift",
+            "direction": None,
+            "target_time": None,
+            "relative_hint": None,
+            "chosen_option": None,
+            "ambiguity": "am_pm",
+            "tool_calls": [
+                {"tool": "ask_clarification", "args": {
+                    "question_code": "AM_PM",
+                    "options": ["09:00", "21:00"],
+                }},
+            ],
+        }
+        for phrase in ("make it 9", "make it 9 instead")
+    },
     # ----- direction ambiguity -----
     "change my cab": {
         "intent": "change_shift",
@@ -231,7 +248,7 @@ DEFAULT_PLANS: dict[str, dict] = {
     # ----- escalation confirm / decline (code decides eligibility) -----
     **{
         phrase: {
-            "intent": "confirm_escalation",
+            "intent": "confirm",
             "direction": None,
             "target_time": None,
             "relative_hint": None,
@@ -242,7 +259,7 @@ DEFAULT_PLANS: dict[str, dict] = {
         for phrase in (
             "yes", "yes please", "yes, send it to my manager", "yes send it to my manager",
             "send it to my manager", "send it to the manager", "please escalate", "escalate",
-            "yes, escalate",
+            "yes, escalate", "yes, book it", "book it", "ok book it",
         )
     },
     **{
@@ -336,18 +353,17 @@ class FakeLLM:
 
         # Extract user message from the messages list.
         user_text = ""
-        # The current turn is the last user message; earlier ones are history.
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                # Strip the <msg>...</msg> wrapper if present.
-                if "<msg>" in content and "</msg>" in content:
-                    start = content.index("<msg>") + len("<msg>")
-                    end = content.index("</msg>")
-                    user_text = content[start:end].strip()
-                else:
-                    user_text = content
-                break
+        # The current turn is the last user message wrapped in <msg>; earlier
+        # user messages are history, and a later one is the repair instruction.
+        users = [m.get("content", "") for m in messages if m.get("role") == "user"]
+        wrapped = [c for c in users if "<msg>" in c and "</msg>" in c]
+        if wrapped:
+            content = wrapped[-1]
+            start = content.index("<msg>") + len("<msg>")
+            end = content.index("</msg>")
+            user_text = content[start:end].strip()
+        elif users:
+            user_text = users[-1]
 
         key = _normalize(user_text)
         plan = self._plans.get(key, {

@@ -404,6 +404,16 @@ TOOL_REGISTRY: dict[str, Any] = {
 }
 
 
+# Human step names for failure messages (SPEC §12: "naming the step").
+TOOL_STEPS = {
+    "get_my_roster": "reading your roster",
+    "check_cab_options": "checking cab availability",
+    "raise_shift_change": "applying your shift change",
+    "get_request_status": "fetching your request status",
+    "ask_clarification": "preparing a question",
+}
+
+
 def dispatch_tool(principal: Principal, tool_name: str, args: dict) -> ToolResult:
     """
     Dispatch a tool call with identity injected from Principal.
@@ -425,12 +435,12 @@ def dispatch_tool(principal: Principal, tool_name: str, args: dict) -> ToolResul
         return ToolResult(
             ok=False,
             error_code="TOOL_TIMEOUT",
-            error_params={"tool": tool_name},
+            error_params={"tool": tool_name, "step": TOOL_STEPS.get(tool_name, "processing your request")},
         )
     except Exception as exc:
         logger.exception("Tool %s unexpected error: %s", tool_name, exc)
         return ToolResult(
             ok=False,
             error_code="TOOL_ERROR",
-            error_params={"tool": tool_name, "error": str(exc)},
+            error_params={"tool": tool_name, "error": str(exc), "step": TOOL_STEPS.get(tool_name, "processing your request")},
         )
