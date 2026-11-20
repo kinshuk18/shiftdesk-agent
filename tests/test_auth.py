@@ -169,3 +169,16 @@ class TestDevToken:
         token = resp.json()["token"]
         me_resp = client.get("/me", headers={"Authorization": f"Bearer {token}"})
         assert me_resp.json()["role"] == "manager"
+
+
+def test_unknown_company_or_employee_is_401():
+    """SPEC §5: a correctly signed token for someone not in the directory is rejected."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from tests.conftest import make_token
+    with TestClient(app, raise_server_exceptions=False) as client:
+        for company, employee in (("nocorp", "E101"), ("acme", "E999")):
+            r = client.get("/me", headers={"Authorization": f"Bearer {make_token(company, employee)}"})
+            assert r.status_code == 401
+            assert r.json()["detail"] == "Your session is not valid. Please sign in again."
+        assert client.get("/me", headers={"Authorization": f"Bearer {make_token('acme', 'E101')}"}).status_code == 200

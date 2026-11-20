@@ -69,6 +69,21 @@ def verify_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
     claims = _decode(creds.credentials)
+    # SPEC §5: unknown company / unknown employee -> 401 (a validly signed token
+    # for someone who is not in the directory is still not a session).
+    from app.db import get_pool
+    with get_pool().connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM employees WHERE company_id=%s AND employee_id=%s",
+            (claims["company_id"], claims["sub"]),
+        )
+        known = cur.fetchone() is not None
+    if not known:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session is not valid. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return Principal(
         company_id=claims["company_id"],
         employee_id=claims["sub"],
