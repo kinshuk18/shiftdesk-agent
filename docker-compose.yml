@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: shiftdesk
+      POSTGRES_PASSWORD: shiftdesk
+      POSTGRES_DB: shiftdesk
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shiftdesk -d shiftdesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://shiftdesk:shiftdesk@db:5432/shiftdesk
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      APP_NOW: ${APP_NOW:-2026-11-20T18:45:00+05:30}
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      ENABLE_DEV_ISSUER: ${ENABLE_DEV_ISSUER:-true}
+      APPROVAL_TTL_HOURS: ${APPROVAL_TTL_HOURS:-24}
+    depends_on:
+      db:
+        condition: service_healthy
+    # psql is available via postgres client installed below (in Dockerfile)
+    # but we install it in the entrypoint target. For the entrypoint to call
+    # psql we add the postgres client package. See Dockerfile.
+
+volumes:
+  pgdata:
