@@ -198,3 +198,20 @@ def get_cabs_for_route(
         )
         rows = cur.fetchall()
     return [Cab(**r) for r in rows]
+
+
+def list_shift_change_requests(conn, company_id: str, status: str | None = None) -> list[dict]:
+    """Manager request queue. Every lookup is restricted to the supplied tenant."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        if status:
+            cur.execute("""SELECT id AS request_id, employee_id, entry_id, old_cab_id, new_cab_id, new_time, status, reason, created_at, decided_at, decision_note FROM shift_change_requests WHERE company_id=%s AND status=%s ORDER BY created_at DESC""", (company_id, status))
+        else:
+            cur.execute("""SELECT id AS request_id, employee_id, entry_id, old_cab_id, new_cab_id, new_time, status, reason, created_at, decided_at, decision_note FROM shift_change_requests WHERE company_id=%s ORDER BY created_at DESC""", (company_id,))
+        return cur.fetchall()
+
+
+def list_employee_shift_change_requests(conn, company_id: str, employee_id: str) -> list[dict]:
+    """Return one employee's requests, scoped by company and employee."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("""SELECT id AS request_id, status, new_time, created_at, decided_at, decision_note FROM shift_change_requests WHERE company_id=%s AND employee_id=%s ORDER BY created_at DESC""", (company_id, employee_id))
+        return cur.fetchall()

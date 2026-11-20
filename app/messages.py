@@ -51,7 +51,10 @@ TOOL_TIMEOUT = (
     "Please try again, or contact the transport desk on {desk_phone}."
 )
 
-WRITE_TOOL_UNCERTAIN = "The status of your request is unknown; it may have been applied. Please ask \"my requests\" to check."
+WRITE_TOOL_UNCERTAIN = (
+    "I couldn't confirm your change in time. Your roster may or may not have been updated. "
+    'Ask me "my requests" to check before trying again.'
+)
 
 # Seat filled between check and apply
 CAB_FILLED = (
@@ -59,11 +62,28 @@ CAB_FILLED = (
     "Your roster has not been changed. Nearest available options:"
 )
 
-# Pending manager approval (stage 3; kept here for reference)
+# SPEC §12 wording. Pending must never claim the change is applied.
 PENDING_APPROVAL = (
-    "Your request #{short_id} is waiting for your transport manager. "
-    "Nothing has changed yet. Typical wait is a few hours; you will see the result here."
+    "Your request #{short_id} is waiting for {manager}. "
+    "Nothing has changed yet: your roster stays as it is until the request is approved. "
+    'Typical wait is a few hours; you will see the result here, or ask me "my requests".'
 )
+
+REQUEST_STATUS_MESSAGES = {
+    "pending_approval": "waiting for your manager; your roster is unchanged",
+    "applied": "approved and applied to your roster",
+    "rejected": "declined; your roster is unchanged",
+    "expired": "expired; your roster is unchanged",
+    "approved_not_applied": "approved, but the cab filled up; your roster is unchanged",
+    "failed": "could not be applied; your roster is unchanged",
+}
+
+NON_APPLIED_MESSAGES = {
+    "rejected": "Your manager declined this change. Your roster is unchanged. You can submit a new request or contact the transport desk.",
+    "expired": "This approval request expired. Your roster is unchanged. Please submit a new request.",
+    "approved_not_applied": "Your manager approved the change, but the cab filled up. Your roster is unchanged. Please choose another cab.",
+    "failed": "We could not apply this change. Your roster is unchanged. Please contact the transport desk.",
+}
 
 # Unexpected server error — includes trace_id so ops can correlate
 GENERIC_ERROR = (

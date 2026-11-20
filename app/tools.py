@@ -7,27 +7,22 @@ Security invariants:
   - Every tool is wrapped in a 1.5-second timeout.
   - Failures never raise into the graph — always return ToolResult(ok=False, ...).
 
-Stage 2 note: raise_shift_change supports ONLY the no-escalation path.
-              escalate=True returns an error; escalation comes in stage 3.
+Stage 3 adds transactional approvals for R1/R2 exceptions when callers opt in.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import uuid
 import datetime
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import psycopg
-
 from app.auth import Principal
 from app.clock import clock
 from app.db import get_pool
 from app.repo import (
-    Cab,
     get_cab,
     get_cabs_for_route,
     get_company,
@@ -229,8 +224,10 @@ def check_cab_options(principal: Principal, entry_id: str, new_time: str) -> Too
 # ---------------------------------------------------------------------------
 
 
-def _idempotency_key(company_id: str, employee_id: str, entry_id: str, new_cab_id: str, new_time: str) -> str:
+def _idempotency_key(company_id: str, employee_id: str, entry_id: str, new_cab_id: str, new_time: str, attempt: int = 0) -> str:
     raw = f"{company_id}|{employee_id}|{entry_id}|{new_cab_id}|{new_time}"
+    if attempt > 0:
+        raw += f"|{attempt}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -239,183 +236,85 @@ def _idempotency_key(company_id: str, employee_id: str, entry_id: str, new_cab_i
 # ---------------------------------------------------------------------------
 
 
-def raise_shift_change(
-    principal: Principal,
-    entry_id: str,
-    new_time: str,
-    cab_id: str,
-    escalate: bool = False,
-) -> ToolResult:
-    """
-    Apply a shift change directly (no-escalation path only in Stage 2).
-
-    Flow:
-    1. Fetch entry and company (identity from Principal).
-    2. Run R1, R2, R3 (plain code).
-    3. Inside a transaction:
-       a. Compute idempotency_key.
-       b. INSERT shift_change_request (or return existing on conflict).
-       c. SELECT cab FOR UPDATE.
-       d. Count active bookings vs capacity (R4).
-       e. If ok: update roster_entry status → active on new cab, write audit_log.
-       f. If not ok: rollback, return SEAT_TAKEN.
-
-    SPEC §8 Stage 2: escalate=True is NOT supported — return an error.
-    """
-    if escalate:
-        return ToolResult(
-            ok=False,
-            error_code="ESCALATION_NOT_SUPPORTED",
-            error_params={"note": "Escalation support comes in Stage 3."},
-        )
-
-    # Parse new_time.
+def raise_shift_change(principal: Principal, entry_id: str, new_time: str, cab_id: str, escalate: bool = False) -> ToolResult:
+    """Validate R1–R3, then apply directly or create a pending approval."""
     try:
         hh, mm = new_time.split(":")
         new_t = datetime.time(int(hh), int(mm))
     except (ValueError, AttributeError):
         return ToolResult(ok=False, error_code="INVALID_TIME", error_params={"new_time": new_time})
-
-    def _apply():
+    # Canonical HH:MM so "9:00" and "09:00" give the same idempotency key.
+    new_time = new_t.strftime("%H:%M")
+    try:
         with get_pool().connection() as conn:
             entry = get_roster_entry(conn, principal, entry_id)
             if entry is None:
-                return "ENTRY_NOT_FOUND", {}
+                return ToolResult(ok=False, error_code="ENTRY_NOT_FOUND", error_params={"entry_id": entry_id})
             company = get_company(conn, principal.company_id)
             if company is None:
-                return "COMPANY_NOT_FOUND", {}
-
-            now = clock.now()
-
-            # R1 — cutoff.
-            r1 = check_cutoff(now, entry.scheduled_time, company.cutoff_minutes)
-            if not r1.ok:
-                return r1.code, r1.message_params
-
-            # R2 — max delta.
+                return ToolResult(ok=False, error_code="COMPANY_NOT_FOUND")
+            r1 = check_cutoff(clock.now(), entry.scheduled_time, company.cutoff_minutes)
             r2 = check_max_delta(entry.scheduled_time, new_t, company.max_shift_delta_minutes)
-            if not r2.ok:
-                return r2.code, r2.message_params
-
-            # R3 — service window.
             r3 = check_service_window(new_t, company.service_start, company.service_end)
             if not r3.ok:
-                return r3.code, r3.message_params
-
-            # Transaction for idempotency + capacity.
-            ikey = _idempotency_key(
-                principal.company_id, principal.employee_id, entry_id, cab_id, new_time
-            )
-            request_id = str(uuid.uuid4())
-            try:
-                with conn.transaction():
-                    # Idempotent insert.
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO shift_change_requests
-                                (id, company_id, employee_id, entry_id,
-                                 old_cab_id, new_cab_id, new_time, status, idempotency_key)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, 'applied', %s)
-                            ON CONFLICT (company_id, idempotency_key) DO NOTHING
-                            RETURNING id
-                            """,
-                            (
-                                request_id,
-                                principal.company_id,
-                                principal.employee_id,
-                                entry_id,
-                                entry.cab_id,
-                                cab_id,
-                                new_t,
-                                ikey,
-                            ),
-                        )
-                        row = cur.fetchone()
-                        if row is None:
-                            # Conflict — already applied.
-                            cur.execute(
-                                "SELECT id FROM shift_change_requests WHERE company_id=%s AND idempotency_key=%s",
-                                (principal.company_id, ikey),
-                            )
-                            existing = cur.fetchone()
-                            return "ALREADY_APPLIED", {"request_id": str(existing[0]) if existing else request_id}
-
-                        effective_request_id = str(row[0])
-
-                        # Lock the cab row.
-                        cur.execute(
-                            "SELECT capacity FROM cabs WHERE company_id=%s AND cab_id=%s FOR UPDATE",
-                            (principal.company_id, cab_id),
-                        )
-                        cab_row = cur.fetchone()
-                        if cab_row is None:
-                            raise ValueError("Cab not found")
-                        capacity = cab_row[0]
-
-                        # Count active bookings (inside lock).
-                        cur.execute(
-                            """
-                            SELECT COUNT(*) FROM roster_entries
-                            WHERE company_id=%s AND cab_id=%s AND service_date=%s
-                              AND status IN ('active', 'pending_change')
-                            """,
-                            (principal.company_id, cab_id, entry.service_date),
-                        )
-                        booked = cur.fetchone()[0]
-                        if booked >= capacity:
-                            raise _CapacityError("SEAT_TAKEN")
-
-                        # Apply: update roster entry.
-                        cur.execute(
-                            """
-                            UPDATE roster_entries
-                               SET cab_id = %s, scheduled_time = %s, status = 'active'
-                             WHERE company_id=%s AND entry_id=%s AND employee_id=%s
-                            """,
-                            (cab_id, new_t, principal.company_id, entry_id, principal.employee_id),
-                        )
-
-                        # Audit log.
-                        cur.execute(
-                            """
-                            INSERT INTO audit_log
-                                (company_id, actor_id, actor_role, action, request_id, detail)
-                            VALUES (%s, %s, %s, 'shift_change_applied', %s, %s)
-                            """,
-                            (
-                                principal.company_id,
-                                principal.employee_id,
-                                principal.role,
-                                effective_request_id,
-                                psycopg.types.json.Jsonb({
-                                    "entry_id": entry_id,
-                                    "old_cab_id": entry.cab_id,
-                                    "new_cab_id": cab_id,
-                                    "new_time": new_time,
-                                }),
-                            ),
-                        )
-
-                return "OK", {"request_id": effective_request_id}
-
-            except _CapacityError:
-                return "SEAT_TAKEN", {}
-
-    class _CapacityError(Exception):
-        pass
-
-    try:
-        code, params = _apply()
+                return ToolResult(ok=False, error_code=r3.code, error_params=r3.message_params)
+            if not r1.ok or not r2.ok:
+                failed = r1 if not r1.ok else r2
+                if not escalate:
+                    return ToolResult(ok=False, error_code=failed.code, error_params=failed.message_params)
+                with conn.cursor() as cur:
+                    cur.execute("SELECT capacity FROM cabs WHERE company_id=%s AND cab_id=%s", (principal.company_id, cab_id))
+                    cab = cur.fetchone()
+                    if cab is None:
+                        return ToolResult(ok=False, error_code="CAB_NOT_FOUND")
+                    cur.execute("SELECT COUNT(*) FROM roster_entries WHERE company_id=%s AND cab_id=%s AND service_date=%s AND entry_id<>%s AND status IN ('active','pending_change')", (principal.company_id, cab_id, entry.service_date, entry_id))
+                    # R4 is never escalated. Handled after this block so the read
+                    # connection is released before _seat_taken() takes its own.
+                    seat_taken = cur.fetchone()[0] >= cab[0]
+                escalate_needed = True
+                with conn.cursor() as cur:
+                    cur.execute("SELECT name FROM employees WHERE company_id=%s AND employee_id=%s", (principal.company_id, company.transport_manager_id))
+                    mgr = cur.fetchone()
+                manager_name = mgr[0] if mgr else None
+            else:
+                seat_taken = False
+                escalate_needed = False
+        if seat_taken:
+            return _seat_taken(principal, entry_id, new_time)
+        # All read connections close before acquiring a connection for key lookup or writes.
+        from app.changes import idempotency_key_for, submit_direct
+        _base_key, attempt = idempotency_key_for(principal.company_id, principal.employee_id, entry_id, cab_id, new_time)
+        key = _idempotency_key(principal.company_id, principal.employee_id, entry_id, cab_id, new_time, attempt)
+        if escalate_needed:
+            from app.graph.approval import start_approval
+            rid, status = start_approval(principal, entry_id, new_time, cab_id, key)
+            if status == "APPROVAL_UNAVAILABLE":
+                return ToolResult(ok=False, error_code=status)
+            if status == "pending_approval":
+                return ToolResult(ok=True, data={"request_id": rid, "status": status, "manager_name": manager_name})
+        else:
+            rid, status = submit_direct(principal, entry_id, new_t, cab_id, key)
+        if status == "SEAT_TAKEN":
+            return _seat_taken(principal, entry_id, new_time)
+        if status in ("CAB_NOT_FOUND", "ENTRY_NOT_FOUND"):
+            return ToolResult(ok=False, error_code=status)
+        return ToolResult(ok=True, data={"request_id": rid, "status": status})
     except Exception as exc:
         logger.exception("raise_shift_change failed: %s", exc)
         return ToolResult(ok=False, error_code="DB_ERROR", error_params={"step": "applying shift change"})
 
-    if code == "OK":
-        return ToolResult(ok=True, data={"request_id": params["request_id"], "status": "applied"})
-    if code == "ALREADY_APPLIED":
-        return ToolResult(ok=True, data={"request_id": params.get("request_id"), "status": "already_applied"})
-    return ToolResult(ok=False, error_code=code, error_params=params)
+
+
+def _seat_taken(principal: Principal, entry_id: str, new_time: str) -> ToolResult:
+    """SEAT_TAKEN plus the nearest free slots (best effort, never raises)."""
+    nearest: list = []
+    try:
+        opts = check_cab_options(principal, entry_id, new_time)
+        if opts.ok:
+            nearest = opts.data.get("nearest_slots", [])
+    except Exception:
+        logger.exception("nearest-slot lookup after SEAT_TAKEN failed")
+    return ToolResult(ok=False, error_code="SEAT_TAKEN", error_params={"nearest_slots": nearest})
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +327,9 @@ def get_request_status(principal: Principal) -> ToolResult:
     Return the employee's open shift change requests.
     company_id / employee_id from Principal.
     """
+    from app.changes import expire_stale
+    expire_stale(principal.company_id)
+
     def _query():
         with get_pool().connection() as conn:
             with conn.cursor() as cur:

@@ -103,3 +103,43 @@ def acme_employee_token() -> str:
 @pytest.fixture
 def zenith_employee_token() -> str:
     return make_token("zenith", "E101", "employee")
+
+
+@pytest.fixture
+def stage3_data(db_conn):
+    """Unique tenant data for Stage 3 tests; audit rows intentionally remain append-only."""
+    import uuid
+    from datetime import date, time
+
+    suffix = uuid.uuid4().hex[:12]
+    employees = [f"T{suffix}{i}" for i in range(12)]
+    manager = f"M{suffix}"
+    zenith_manager = f"Z{suffix}"
+    zenith_employee = f"ZE{suffix}"
+    cab = f"CAB{suffix}"
+    zenith_cab = f"ZC{suffix}"
+    entries = [f"ENT{suffix}{i}" for i in range(12)]
+    approval_entry = f"APR{suffix}"
+    fixture_conn = psycopg.connect(settings.database_url)
+    with fixture_conn.transaction():
+        with fixture_conn.cursor() as cur:
+            cur.executemany("INSERT INTO employees(company_id,employee_id,name) VALUES('acme',%s,%s)", [(e, e) for e in employees] + [(manager, manager)])
+            cur.executemany("INSERT INTO employees(company_id,employee_id,name) VALUES('zenith',%s,%s)", [(zenith_manager, zenith_manager), (zenith_employee, zenith_employee)])
+            cur.execute("INSERT INTO cabs(company_id,cab_id,route_id,direction,departure_time,capacity) VALUES('acme',%s,'R1','drop','21:00',1)", (cab,))
+            cur.execute("INSERT INTO cabs(company_id,cab_id,route_id,direction,departure_time,capacity) VALUES('zenith',%s,'R1','drop','21:00',1)", (zenith_cab,))
+            cur.executemany("INSERT INTO roster_entries(company_id,entry_id,employee_id,service_date,direction,cab_id,scheduled_time,status) VALUES('acme',%s,%s,%s,'drop','C_AC_D01',%s,'active')", [(entries[i], employees[i], date(2026, 11, 20), time(22, 0)) for i in range(10)])
+            cur.execute("INSERT INTO roster_entries(company_id,entry_id,employee_id,service_date,direction,cab_id,scheduled_time,status) VALUES('acme',%s,%s,%s,'drop','C_AC_D01','20:30','active')", (approval_entry, employees[10], date(2026, 11, 20)))
+            cur.execute("INSERT INTO roster_entries(company_id,entry_id,employee_id,service_date,direction,cab_id,scheduled_time,status) VALUES('zenith',%s,%s,%s,'drop',%s,'21:00','active')", (f"ZENT{suffix}", zenith_employee, date(2026, 11, 20), zenith_cab))
+    data = {"suffix": suffix, "employees": employees, "manager": manager, "zenith_manager": zenith_manager, "zenith_employee": zenith_employee, "cab": cab, "zenith_cab": zenith_cab, "entries": entries, "approval_entry": approval_entry}
+    yield data
+    with fixture_conn.transaction():
+        with fixture_conn.cursor() as cur:
+            cur.execute("DELETE FROM notifications WHERE company_id='acme' AND employee_id=ANY(%s)", (employees + [manager],))
+            cur.execute("DELETE FROM shift_change_requests WHERE company_id='acme' AND employee_id=ANY(%s)", (employees + [manager],))
+            cur.execute("DELETE FROM roster_entries WHERE company_id='acme' AND employee_id=ANY(%s)", (employees + [manager],))
+            cur.execute("DELETE FROM employees WHERE company_id='acme' AND employee_id=ANY(%s)", (employees + [manager],))
+            cur.execute("DELETE FROM roster_entries WHERE company_id='zenith' AND employee_id=%s", (zenith_employee,))
+            cur.execute("DELETE FROM employees WHERE company_id='zenith' AND employee_id=ANY(%s)", ([zenith_manager, zenith_employee],))
+            cur.execute("DELETE FROM cabs WHERE company_id='acme' AND cab_id=%s", (cab,))
+            cur.execute("DELETE FROM cabs WHERE company_id='zenith' AND cab_id=%s", (zenith_cab,))
+    fixture_conn.close()

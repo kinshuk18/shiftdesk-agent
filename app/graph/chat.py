@@ -32,6 +32,9 @@ from app.messages import (
     WRITE_TOOL_UNCERTAIN,
     CAB_FILLED,
     format_rule_message,
+    PENDING_APPROVAL,
+    NON_APPLIED_MESSAGES,
+    REQUEST_STATUS_MESSAGES,
 )
 from app.tools import ToolResult, dispatch_tool
 
@@ -369,12 +372,20 @@ def node_compose_reply(state: ChatState) -> ChatState:
 
         if first_err == "SEAT_TAKEN":
             reply = CAB_FILLED
-            # Try to append nearest slots from check_cab_options result.
+            # Nearest slots: from the failed raise_shift_change, else from check_cab_options.
+            slots = []
             for r in tool_results:
-                if r["tool"] == "check_cab_options" and r.get("ok") and r.get("data"):
+                if r.get("error_code") == "SEAT_TAKEN":
+                    slots = (r.get("error_params") or {}).get("nearest_slots", []) or slots
+                if not slots and r["tool"] == "check_cab_options" and r.get("ok") and r.get("data"):
                     slots = r["data"].get("nearest_slots", [])
-                    if slots:
-                        options = [f"{s['departure_time']} (cab {s['cab_id']}, {s['free_seats']} seats free)" for s in slots]
+            if slots:
+                options = [s["departure_time"] for s in slots]
+                reply += "\n" + "\n".join(
+                    f"• {s['departure_time']} (cab {s['cab_id']}, {s['free_seats']} seats free)" for s in slots
+                )
+            else:
+                reply += " none right now. Please contact the transport desk."
             status = "error"
             return _append_to_history({**state, "reply": reply, "status": status, "options": options, "request_id": None})
 
@@ -506,14 +517,25 @@ def node_compose_reply(state: ChatState) -> ChatState:
             data = r["data"]
             rid = data.get("request_id")
             applied_status = data.get("status", "applied")
-            if applied_status == "already_applied":
-                reply = f"Your shift change (request #{str(rid)[:8]}) has already been applied."
-            else:
+            # Status switch: only "applied"/"already_applied" may say the roster changed.
+            reply_status = "ok" if applied_status in ("applied", "already_applied") else applied_status
+            if applied_status == "applied":
                 reply = f"Done! Your shift change has been applied (request #{str(rid)[:8]})."
+            elif applied_status == "already_applied":
+                reply = f"Your shift change (request #{str(rid)[:8]}) has already been applied."
+            elif applied_status == "pending_approval":
+                reply = PENDING_APPROVAL.format(
+                    short_id=str(rid)[:8],
+                    manager=data.get("manager_name") or "your transport manager",
+                )
+            elif applied_status in NON_APPLIED_MESSAGES:
+                reply = NON_APPLIED_MESSAGES[applied_status]
+            else:
+                reply = "Your request is being processed. Your roster has not been changed yet. Ask me \"my requests\" to check the status."
             return _append_to_history({
                 **state,
                 "reply": reply,
-                "status": "ok",
+                "status": reply_status,
                 "options": [],
                 "request_id": rid,
             })
@@ -528,7 +550,7 @@ def node_compose_reply(state: ChatState) -> ChatState:
                 lines = []
                 for req in reqs:
                     lines.append(
-                        f"• Request #{req['request_id'][:8]}: {req['status']} "
+                        f"• Request #{req['request_id'][:8]}: {REQUEST_STATUS_MESSAGES.get(req['status'], 'being processed')} "
                         f"(new_time={req.get('new_time', 'N/A')})"
                     )
                 reply = "Your shift change requests:\n" + "\n".join(lines)

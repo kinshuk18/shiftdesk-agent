@@ -91,13 +91,20 @@ async def lifespan(app: FastAPI):
     _chat_mod._llm_singleton = _build_llm()
 
     app.state.chat_graph = build_chat_graph(checkpointer=checkpointer)
+    from app.graph.approval import build_approval_graph, set_approval_graph
+    approval_graph = build_approval_graph(checkpointer=checkpointer)
+    app.state.approval_graph = approval_graph
+    set_approval_graph(approval_graph)
     app.state.pg_pool = pg_pool
 
     yield
 
+    set_approval_graph(None)
     close_pool()
     pg_pool.close()
-    _executor.shutdown(wait=False)
+    # Module-level executor is shared by every app lifespan (tests build several
+    # TestClients on the same app); shutting it down breaks the next lifespan.
+    # _executor.shutdown(wait=False)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +112,9 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="ShiftDesk", lifespan=lifespan)
+
+from app.manager import router as manager_router
+app.include_router(manager_router)
 
 
 # ---------------------------------------------------------------------------
