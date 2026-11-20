@@ -6,6 +6,8 @@ Tests that don't need the DB are marked with no special markers and run anywhere
 """
 
 import os
+os.environ["LLM_PROVIDER"] = "fake"
+
 import pytest
 import psycopg
 from datetime import datetime, timezone, timedelta
@@ -39,6 +41,31 @@ def db_conn():
     conn = psycopg.connect(settings.database_url)
     yield conn
     conn.close()
+
+
+@pytest.fixture(autouse=True)
+def clean_chat_checkpoints_and_reset_llm():
+    """
+    Clear chat checkpoints and reset the FakeLLM singleton before each test.
+    Prevents cross-test state leakage in PostgresSaver and FakeLLM.
+    """
+    if _db_available():
+        try:
+            with psycopg.connect(settings.database_url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM checkpoint_writes WHERE thread_id LIKE 'chat:%'")
+                    cur.execute("DELETE FROM checkpoint_blobs WHERE thread_id LIKE 'chat:%'")
+                    cur.execute("DELETE FROM checkpoints WHERE thread_id LIKE 'chat:%'")
+                conn.commit()
+        except Exception:
+            pass
+    try:
+        import app.graph.chat as _chat_mod
+        from app.llm.fake import FakeLLM
+        _chat_mod._llm_singleton = FakeLLM()
+    except Exception:
+        pass
+    yield
 
 
 # ---------------------------------------------------------------------------

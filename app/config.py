@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     enable_dev_issuer: bool = True
     approval_ttl_hours: int = 24
 
+    # LLM model names (overridden per provider; verify free-tier names before use).
+    # TODO: verify groq free-tier model at https://console.groq.com/docs/models
+    groq_model: str = ""
+    # TODO: verify gemini free-tier model at https://ai.google.dev/gemini-api/docs/models/gemini
+    gemini_model: str = ""
+
+    # Fallback transport desk phone shown in failure messages when the company
+    # phone is unavailable (e.g. DB unreachable).
+    desk_phone: str = "the transport desk"
+
 
 # Module-level singleton — import this everywhere.
 settings = Settings()
