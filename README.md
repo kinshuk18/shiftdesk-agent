@@ -253,4 +253,4 @@ docs/SPEC.md docs/EVAL_REPORT.md
 
 ---
 
-AI coding tools (Antigravity, Codex, Claude Code) were used for scaffolding; design, tests and evaluation are mine.
+AI coding tools (Antigravity, Claude Code) were used to scaffold code, tests and the eval set. Design decisions, review and evaluation are mine.
