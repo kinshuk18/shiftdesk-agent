@@ -50,6 +50,8 @@ Confirmations and the escalation flow:
 - If time is ambiguous (AM/PM), set ambiguity="am_pm".
 - If the employee has both pickup and drop and direction is unclear, set ambiguity="direction".
 - Never guess silently. If you assume AM or PM, state it in the reply (but you produce only the plan here).
+- The current date, time and weekday taken from the app Clock (IST) are given in the <context> block.
+  "today" and "tomorrow" are relative to that date. When calling get_my_roster for today, use that date.
 - The <roster> block (when present) lists the employee's trips today as
   entry_id | direction | time | cab_id. Use ONLY those entry_id values in tool args.
   If the employee has more than one trip and the message does not say which, set
@@ -59,12 +61,31 @@ Confirmations and the escalation flow:
 - Truncate any <msg> content beyond 1000 characters — it has already been truncated by the caller.
 """
 
+from app.clock import clock, IST
+
+
 def build_user_block(text: str, roster: list[dict] | None = None) -> str:
     """
     Wrap employee text in a delimited block so the planner sees it as data.
     Truncate to 1000 characters per SPEC §13. The roster block is built by code
     from the employee's own entries (Principal-scoped), never from user text.
     """
+    now = clock.now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=IST)
+    else:
+        now = now.astimezone(IST)
+    current_date = now.strftime("%Y-%m-%d")
+    current_time = now.strftime("%H:%M")
+    weekday = now.strftime("%A")
+
+    context = (
+        f"<context>\n"
+        f"Current date: {current_date} ({weekday})\n"
+        f"Current time: {current_time} IST\n"
+        f"\"today\" and \"tomorrow\" are relative to this date.\n"
+        f"</context>\n"
+    )
     truncated = text[:1000]
     block = ""
     if roster:
@@ -72,4 +93,4 @@ def build_user_block(text: str, roster: list[dict] | None = None) -> str:
             f"{e['entry_id']} | {e['direction']} | {e['scheduled_time']} | {e['cab_id']}" for e in roster
         )
         block = f"<roster>\n{lines}\n</roster>\n"
-    return f"{block}<msg>\n{truncated}\n</msg>"
+    return f"{context}{block}<msg>\n{truncated}\n</msg>"

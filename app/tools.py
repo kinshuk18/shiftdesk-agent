@@ -62,17 +62,29 @@ class ToolResult:
 # ---------------------------------------------------------------------------
 
 
-def get_my_roster(principal: Principal, date: str) -> ToolResult:
+def get_my_roster(principal: Principal, date: Optional[str] = None, **kwargs: Any) -> ToolResult:
     """
     Return the employee's roster entries for a given date.
     company_id / employee_id come from Principal — never from args.
     Parameter name is 'date' to match the planner's tool call schema.
+    Treat the model-supplied date as untrusted: use it only if it parses
+    as an ISO date; if it is missing or invalid, use the Clock's today.
     """
-    date_str = date  # local alias for clarity
-    try:
-        service_date = datetime.date.fromisoformat(date_str)
-    except (ValueError, TypeError):
-        return ToolResult(ok=False, error_code="INVALID_DATE", error_params={"date": date_str})
+    service_date: datetime.date
+    if isinstance(date, datetime.date):
+        service_date = date
+    elif isinstance(date, datetime.datetime):
+        service_date = date.date()
+    elif date and isinstance(date, str):
+        try:
+            service_date = datetime.date.fromisoformat(date.strip())
+        except (ValueError, TypeError):
+            try:
+                service_date = datetime.datetime.fromisoformat(date.strip()).date()
+            except (ValueError, TypeError):
+                service_date = clock.now().date()
+    else:
+        service_date = clock.now().date()
 
     def _query():
         with get_pool().connection() as conn:

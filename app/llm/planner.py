@@ -18,6 +18,9 @@ from app.llm.base import BudgetExhausted, LLMBudget, LLMClient, LLMError
 from app.llm.prompts import PLANNER_SYSTEM_PROMPT, build_user_block
 
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
+logger.setLevel(logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Allow-listed tool names (SPEC §8).
@@ -151,8 +154,11 @@ def call_planner(
     raw = llm.chat(messages)
 
     try:
-        return _parse_plan(raw)
+        plan = _parse_plan(raw)
+        logger.info("Planner call: raw=%r, validated_plan=%r", raw, plan)
+        return plan
     except (json.JSONDecodeError, ValueError, Exception) as first_exc:
+        logger.info("Planner call: raw=%r, validation_error=%s", raw, first_exc)
         logger.warning("Planner first attempt failed: %s — retrying once", first_exc)
 
         # Repair attempt: add the bad output + a correction instruction.
@@ -169,8 +175,11 @@ def call_planner(
         budget.charge()  # Repair counts in budget (SPEC §3).
         raw2 = llm.chat(repair_messages)
         try:
-            return _parse_plan(raw2)
+            plan = _parse_plan(raw2)
+            logger.info("Planner repair call: raw=%r, validated_plan=%r", raw2, plan)
+            return plan
         except (json.JSONDecodeError, ValueError, Exception) as second_exc:
+            logger.info("Planner repair call: raw=%r, validation_error=%s", raw2, second_exc)
             raise PlannerError(
                 f"Planner failed after repair. First error: {first_exc}. "
                 f"Second error: {second_exc}."
