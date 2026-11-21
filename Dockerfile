@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# entrypoint.sh handles: schema apply, seed, then uvicorn.
+# entrypoint.sh handles: schema apply, seed, then runs CMD.
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
@@ -24,3 +24,4 @@ ENV PYTHONDONTWRITEBYTECODE=1
 EXPOSE 8000
 
 ENTRYPOINT ["/entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
