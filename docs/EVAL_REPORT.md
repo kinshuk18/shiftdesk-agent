@@ -125,28 +125,28 @@ instead of re-reading the current `<msg>`.
 
 ## Live run
 
-Provider / model: TO FILL AFTER LIVE RUN
+Provider / model: openai/gpt-oss-20b via Groq free tier (partial run)
 
-Date and commit: TO FILL AFTER LIVE RUN
+Date and commit: run on commit d974718 (before the date fix). Fix is in commit 1da8256. A live re-run after the fix was not completed before the deadline.
 
 ### Results by category
 
-TO FILL AFTER LIVE RUN
+17 cases reached by the runner: 4 pass, 4 fail (iso-01, iso-02, cut-01, sel-01), 9 skipped after fast failures that look like rate limiting (cause not confirmed). The fake-LLM suite (45/45) tests plumbing and rules, not model quality.
 
 ### Bench (scripts/bench.py, 60 messages)
 
-TO FILL AFTER LIVE BENCH
+Live bench not reported: 60 of 60 messages errored at about 0.2 s, so the numbers are meaningless. The fake-LLM bench (p95 0.093 s) measures code overhead only, so the p95 under 5 s target with a real LLM is unverified.
 
 ### Honest failures and causes
 
 #### Failure 1
 
-TO FILL AFTER LIVE RUN
+Empty roster: the planner was never told the current date, emitted 2026-11-21 while the app Clock and seed data are 2026-11-20, so get_my_roster found nothing (confirmed in the planner log). Fixed in 1da8256: the prompt now carries the Clock date, time and weekday, get_my_roster ignores invalid model dates, and tests/test_roster_date.py covers it. Likely also explains iso-01 and iso-02, not re-verified live.
 
 #### Failure 2
 
-TO FILL AFTER LIVE RUN
+cut-01 and sel-01: cause not diagnosed before the deadline and not re-run after the date fix.
 
 #### Failure 3 (optional)
 
-TO FILL AFTER LIVE RUN
+No further failures recorded.

@@ -105,7 +105,7 @@ autocommit pool for `PostgresSaver` (`app/main.py` lifespan, max 5).
 
   | provider | p50 | p95 | max | LLM calls/message |
   |---|---|---|---|---|
-  | real model | TO FILL AFTER LIVE BENCH | TO FILL AFTER LIVE BENCH | TO FILL AFTER LIVE BENCH | TO FILL AFTER LIVE BENCH |
+  | real model | not measured | not measured | not measured | not measured |
 
 ## LLM vs plain code
 
